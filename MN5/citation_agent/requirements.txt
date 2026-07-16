@@ -1,0 +1,6 @@
+numpy
+faiss-cpu
+sentence-transformers
+openai
+tqdm
+huggingface_hub

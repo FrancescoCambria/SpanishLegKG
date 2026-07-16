@@ -1,0 +1,5 @@
+# Ignore scraped data and temporary checkpoints
+data/
+.checkpoint*
+*.log
+failed_dates.txt
