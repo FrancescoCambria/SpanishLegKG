@@ -5,7 +5,10 @@ import json
 import time
 import argparse
 import requests
-from urllib3.util import create_urllib3_context
+try:
+    from urllib3.util import create_urllib3_context
+except ImportError:
+    from urllib3.util.ssl_ import create_urllib3_context
 from requests.adapters import HTTPAdapter
 
 # Custom SSL Adapter to lower security level to SECLEVEL=1.

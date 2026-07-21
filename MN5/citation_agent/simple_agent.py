@@ -673,8 +673,8 @@ Do not include any thinking tags or markdown code wrappers in your final answer,
 
 def main():
     parser = argparse.ArgumentParser(description="Simple Citation Extraction Agent with Section Resolution")
-    parser.add_argument("--input-json", default="/home/cambria/gram3/LawGraph/Spain/MN5/extracted_subgraph_large.json", help="Path to input graph JSON")
-    parser.add_argument("--output-json", default="/home/cambria/gram3/LawGraph/Spain/MN5/extracted_subgraph_large_updated.json", help="Path to output graph JSON")
+    parser.add_argument("--input-json", default="data/extracted_subgraph_custom.json", help="Path to input graph JSON")
+    parser.add_argument("--output-json", default="data/extracted_subgraph_custom_updated.json", help="Path to output graph JSON")
     parser.add_argument("--vllm-url", default="http://127.0.0.1:8000/v1", help="URL of vLLM Server")
     parser.add_argument("--vllm-model-name", default="/gpfs/projects/bsc100/models/DeepSeek-R1-Distill-Qwen-32B", help="Model path/name used on vLLM server")
     parser.add_argument("--batch-size", type=int, default=50, help="Checkpoints batch save size")

@@ -7,7 +7,10 @@ import argparse
 import requests
 from concurrent.futures import ThreadPoolExecutor
 from requests.adapters import HTTPAdapter
-from urllib3.util import create_urllib3_context
+try:
+    from urllib3.util import create_urllib3_context
+except ImportError:
+    from urllib3.util.ssl_ import create_urllib3_context
 
 # Add Catalonia root directory to sys.path
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -58,10 +61,10 @@ def load_dogc_reference_data(data_dir, verbose=False):
     main_path = os.path.join(data_dir, "dogc_documents.json")
     
     target_path = None
-    if os.path.exists(backup_path):
-        target_path = backup_path
-    elif os.path.exists(main_path):
+    if os.path.exists(main_path):
         target_path = main_path
+    elif os.path.exists(backup_path):
+        target_path = backup_path
         
     if not target_path:
         if verbose:

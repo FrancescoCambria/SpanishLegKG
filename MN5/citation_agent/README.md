@@ -3,6 +3,11 @@
 This directory contains a complete, robust system to extract citations from legal text in an iterative and self-contained manner. It features a RAG (Retrieval-Augmented Generation) pipeline using FAISS and SentenceTransformers to retrieve few-shot examples from existing citations in the graph, boosting the accuracy of the extraction model.
 
 ## Folder Contents
+- **`simple_agent.py`**: Base simple citation extraction agent.
+- **`simple_agent_v2.py`**: Advanced citation verification and extraction agent. Includes existing detected citations in the LLM prompt to verify correctness and provides a Knowledge Graph Reference Catalog of existing document nodes.
+- **`simple_agent_v3.py`**: Multi-stage citation pipeline breaking extraction into 3 distinct LLM prompts per node: (1) Raw citation detection, (2) Decomposition of compound citations & standardization into legal fields, and (3) Graph matching & reconciliation (KEEP/MODIFY/REMOVE/ADD).
+- **`run_simple_agent_v2.sh`**: Wrapper script to run `simple_agent_v2.py`.
+- **`run_simple_agent_v3.sh`**: Wrapper script to run `simple_agent_v3.py`.
 - **`agent.py`**: The core Python script containing the dual-FAISS RAG pipeline (Few-Shot examples + Target Nodes resolver) and the vLLM extraction runner.
 - **`setup_env.sh`**: Installs a local virtual environment (`venv`) and all requirements in user-space.
 - **`requirements.txt`**: Standard dependencies (`numpy`, `faiss-cpu`, `sentence-transformers`, `openai`, `tqdm`).

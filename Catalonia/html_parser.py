@@ -63,7 +63,11 @@ _ES_ORDINALS = [
 _ALL_ORDINALS_SORTED = sorted(list(set(_CAT_ORDINALS + _ES_ORDINALS)), key=len, reverse=True)
 _ORDINALS_PATTERN_STR = "|".join(_ALL_ORDINALS_SORTED)
 
-# Regex patterns for identifying sections
+CHAPTER_PAT = re.compile(
+    r'^\s*(Capítol|Capítulo|Títol|Título|Secció|Sección)\s+(preliminar|[I|V|X|L|C]+|\d+[\w\-]*)\.?\s*(.*)',
+    re.IGNORECASE
+)
+
 ARTICLE_PAT = re.compile(
     r'^\s*(Article|Artículo|Art\.)\s+(únic|único|' + _ORDINALS_PATTERN_STR + r'|\d+[\w\-]*)\.?\s*(.*)', 
     re.IGNORECASE
@@ -373,11 +377,13 @@ def parse_document(html_content, url):
     sections = []
     attachments = []
     attachment_counter = 0
+    current_chapter = None
     
     current_section = {
         "type": "introduction",
         "title": "Preamble",
         "heading": None,
+        "chapter": None,
         "commas": [],
         "attachments": []
     }
@@ -423,6 +429,8 @@ def parse_document(html_content, url):
             text = el.get_text().strip()
             text = re.sub(r'\s+', ' ', text)
             
+            # Detect Chapters
+            m_chap = CHAPTER_PAT.match(text)
             # Detect standard Articles
             m_art = ARTICLE_PAT.match(text)
             # Detect Resolution points (e.g. "Primer. ...")
@@ -432,7 +440,26 @@ def parse_document(html_content, url):
             # Detect Annexes
             m_annex = ANNEX_PAT.match(text)
             
-            if m_art:
+            if m_chap:
+                chap_type = m_chap.group(1).capitalize()
+                chap_num = m_chap.group(2)
+                heading = m_chap.group(3)
+                
+                chap_title = f"{chap_type} {chap_num}"
+                current_chapter = f"{chap_title}. {heading}".strip(". ") if heading else chap_title
+                
+                current_section = {
+                    "type": "chapter",
+                    "title": chap_title,
+                    "heading": heading or None,
+                    "chapter": current_chapter,
+                    "commas": [],
+                    "attachments": []
+                }
+                sections.append(current_section)
+                idx += 1
+
+            elif m_art:
                 art_num = m_art.group(2)
                 heading = m_art.group(3)
                 
@@ -440,7 +467,7 @@ def parse_document(html_content, url):
                 if not heading and idx + 1 < n_blocks:
                     next_el = block_elements[idx+1]
                     next_text = next_el.get_text().strip()
-                    if next_el.name not in ['table', 'img'] and not ARTICLE_PAT.match(next_text) and not DISPOSITION_PAT.match(next_text) and not ANNEX_PAT.match(next_text) and not SIGNATURE_START_PAT.match(next_text) and not RESOL_POINT_PAT.match(next_text):
+                    if next_el.name not in ['table', 'img'] and not CHAPTER_PAT.match(next_text) and not ARTICLE_PAT.match(next_text) and not DISPOSITION_PAT.match(next_text) and not ANNEX_PAT.match(next_text) and not SIGNATURE_START_PAT.match(next_text) and not RESOL_POINT_PAT.match(next_text):
                         heading = re.sub(r'\s+', ' ', next_text)
                         idx += 1
                         
@@ -448,6 +475,7 @@ def parse_document(html_content, url):
                     "type": "article",
                     "title": f"Article {art_num}",
                     "heading": heading or None,
+                    "chapter": current_chapter,
                     "commas": [],
                     "attachments": []
                 }
@@ -462,6 +490,7 @@ def parse_document(html_content, url):
                     "type": "article", # Map resolution points as article nodes
                     "title": pt_name,
                     "heading": heading or None,
+                    "chapter": current_chapter,
                     "commas": [],
                     "attachments": []
                 }
@@ -481,6 +510,7 @@ def parse_document(html_content, url):
                     "type": "disposition",
                     "title": disp_title,
                     "heading": heading or None,
+                    "chapter": current_chapter,
                     "commas": [],
                     "attachments": []
                 }
@@ -499,6 +529,7 @@ def parse_document(html_content, url):
                     "type": "annex",
                     "title": annex_title,
                     "heading": heading or None,
+                    "chapter": current_chapter,
                     "commas": [],
                     "attachments": []
                 }
@@ -511,6 +542,7 @@ def parse_document(html_content, url):
                     "type": "signature",
                     "title": "Signatures",
                     "heading": None,
+                    "chapter": current_chapter,
                     "commas": [text],
                     "attachments": []
                 }
