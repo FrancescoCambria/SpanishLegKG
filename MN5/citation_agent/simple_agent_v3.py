@@ -22,7 +22,7 @@ class SimpleCitationAgentV3:
         self.graph_data = None
         self.nodes_by_id = {}
         
-        # Lookup tables for mapping citations
+        # Lookup tables for active graph nodes
         self.nodes_by_title = {}
         self.nodes_by_doc_number = {}
         self.nodes_by_eli = {}
@@ -30,6 +30,17 @@ class SimpleCitationAgentV3:
         self.sections_by_document = {}
         self.document_nodes = []
         self.max_node_id = 0
+
+        # Master Hierarchical Catalog lookup structures (from Catalonia/data/hierarchical_output)
+        self.hierarchical_dir = Path(args.hierarchical_dir) if args.hierarchical_dir else None
+        self.hierarchical_loaded = False
+        self.h_docs_by_id = {}
+        self.h_docs_by_title = {}
+        self.h_docs_by_num = {}
+        self.h_cido_by_id = {}
+        self.h_cido_by_title = {}
+        self.h_sections_by_id = {}
+        self.h_sections_by_doc = {}
         
         # Keep track of active changes for signal handling
         self.interrupted = False
@@ -85,6 +96,107 @@ class SimpleCitationAgentV3:
         text = re.sub(r"[^\w\s]", "", text)
         text = " ".join(text.split())
         return text
+
+    def _clean_document_title(self, title, art_sec=""):
+        if not title:
+            return ""
+        s = str(title).strip()
+        s = re.sub(
+            r"^(?:artículos?|articulo|article|art\.|arts\.|sección|seccion|sec\.|disposición\s+[\wªº]+|disposicio\s+[\wªº]+|anexo|annex)\s*[\d\w\s.,/\-ªº]*\s+(?:del|de\s+la|de\s+los|de\s+las|de|d'|d’)\s*",
+            "",
+            s,
+            flags=re.IGNORECASE
+        ).strip()
+        if art_sec:
+            norm_art = self._normalize_section_title(art_sec)
+            if norm_art and self._normalize_section_title(s).startswith(norm_art):
+                s = re.sub(r"^" + re.escape(art_sec) + r"\s+(?:del|de\s+la|de\s+los|de\s+las|de|d'|d’)\s*", "", s, flags=re.IGNORECASE).strip()
+        return s
+
+    def load_hierarchical_catalog(self):
+        """
+        Loads master node maps from Catalonia/data/hierarchical_output directory:
+          - document_nodes.json
+          - cido_nodes.json
+          - section_nodes.json
+        """
+        if self.hierarchical_loaded:
+            return
+
+        if not self.hierarchical_dir or not self.hierarchical_dir.exists():
+            # Check default relative path from current directory or cat_root
+            cat_root = Path(__file__).resolve().parent.parent.parent / "Catalonia"
+            default_h_dir = cat_root / "data" / "hierarchical_output"
+            if default_h_dir.exists():
+                self.hierarchical_dir = default_h_dir
+
+        if not self.hierarchical_dir or not self.hierarchical_dir.exists():
+            print(f"[SimpleAgentV3] Warning: Hierarchical output directory not found at '{self.hierarchical_dir}'. Skipping master catalog lookup.")
+            return
+
+        print(f"\n[SimpleAgentV3] Loading master hierarchical catalog maps from {self.hierarchical_dir}...")
+        
+        # 1. Load document_nodes.json
+        doc_nodes_file = self.hierarchical_dir / "document_nodes.json"
+        if doc_nodes_file.exists():
+            print(f"  - Reading {doc_nodes_file.name}...")
+            try:
+                with open(doc_nodes_file, "r", encoding="utf-8") as f:
+                    docs = json.load(f)
+                for d in docs:
+                    d_id = str(d.get("id"))
+                    self.h_docs_by_id[d_id] = d
+                    title = d.get("title")
+                    if title:
+                        norm_t = self._normalize_str(title)
+                        if norm_t:
+                            self.h_docs_by_title[norm_t] = d
+                        # Extract document number pattern e.g. 41/1977
+                        m = re.search(r"\b\d+/\d{4}\b", title)
+                        if m:
+                            self.h_docs_by_num[self._normalize_str(m.group(0))] = d
+                print(f"    Indexed {len(self.h_docs_by_id)} master document nodes.")
+            except Exception as e:
+                print(f"    Error reading {doc_nodes_file}: {e}")
+
+        # 2. Load cido_nodes.json
+        cido_nodes_file = self.hierarchical_dir / "cido_nodes.json"
+        if cido_nodes_file.exists():
+            print(f"  - Reading {cido_nodes_file.name}...")
+            try:
+                with open(cido_nodes_file, "r", encoding="utf-8") as f:
+                    cidos = json.load(f)
+                for c in cidos:
+                    c_id = str(c.get("id"))
+                    self.h_cido_by_id[c_id] = c
+                    title = c.get("title")
+                    if title:
+                        norm_t = self._normalize_str(title)
+                        if norm_t:
+                            self.h_cido_by_title[norm_t] = c
+                print(f"    Indexed {len(self.h_cido_by_id)} master CIDO nodes.")
+            except Exception as e:
+                print(f"    Error reading {cido_nodes_file}: {e}")
+
+        # 3. Load section_nodes.json
+        sec_nodes_file = self.hierarchical_dir / "section_nodes.json"
+        if sec_nodes_file.exists():
+            print(f"  - Reading {sec_nodes_file.name}...")
+            try:
+                with open(sec_nodes_file, "r", encoding="utf-8") as f:
+                    secs = json.load(f)
+                for s in secs:
+                    s_id = str(s.get("id"))
+                    doc_id = str(s.get("document_id"))
+                    self.h_sections_by_id[s_id] = s
+                    if doc_id not in self.h_sections_by_doc:
+                        self.h_sections_by_doc[doc_id] = []
+                    self.h_sections_by_doc[doc_id].append(s)
+                print(f"    Indexed {len(self.h_sections_by_id)} master section nodes.")
+            except Exception as e:
+                print(f"    Error reading {sec_nodes_file}: {e}")
+
+        self.hierarchical_loaded = True
 
     def load_graph(self):
         if self.graph_data is None:
@@ -152,7 +264,7 @@ class SimpleCitationAgentV3:
             # Map document sections
             print("Mapping document sections and articles...")
             for rel in self.graph_data.get("relationships", []):
-                if rel.get("type") == "HAS_SECTION":
+                if rel.get("type") in ["HAS_SECTION", "HAS_DOCUMENT", "PART_OF"]:
                     source_id = rel.get("source")
                     target_id = rel.get("target")
                     target_node = self.nodes_by_id.get(target_id)
@@ -164,7 +276,118 @@ class SimpleCitationAgentV3:
             print(f"Indexed {len(self.nodes_by_title)} titles, {len(self.nodes_by_doc_number)} doc numbers, "
                   f"{len(self.nodes_by_eli)} ELI URIs, {len(self.nodes_by_dogc_number)} DOGC numbers across {len(self.document_nodes)} document nodes.")
             print(f"Current maximum node ID is {self.max_node_id}.")
+
+            # Load master catalog from Catalonia/data/hierarchical_output
+            self.load_hierarchical_catalog()
+
         return self.graph_data
+
+    def import_node_from_hierarchical_catalog(self, node_id):
+        """
+        Imports/instantiates a master node from Catalonia/data/hierarchical_output
+        (document_nodes.json, cido_nodes.json, or section_nodes.json) into active graph_data["nodes"].
+        """
+        node_id_str = str(node_id)
+        if node_id in self.nodes_by_id or node_id_str in self.nodes_by_id:
+            return self.nodes_by_id.get(node_id) or self.nodes_by_id.get(node_id_str)
+
+        # Check document_nodes.json
+        if node_id_str in self.h_docs_by_id:
+            h_doc = self.h_docs_by_id[node_id_str]
+            doc_title = h_doc.get("title") or f"Document {node_id_str}"
+            doc_date = h_doc.get("date") or ""
+            bulletin = h_doc.get("bulletin") or "DOGC"
+            url = h_doc.get("link_to_text") or ""
+            
+            m_num = re.search(r"\b\d+/\d{4}\b", doc_title)
+            doc_num = m_num.group(0) if m_num else ""
+
+            props = {
+                "title": doc_title,
+                "titleEs": doc_title,
+                "titleCa": doc_title,
+                "documentNumber": doc_num,
+                "documentDate": doc_date,
+                "bulletin": bulletin,
+                "url": url,
+                "parent_cido_id": h_doc.get("parent_cido_id"),
+                "imported_from_hierarchical_catalog": True,
+                "section": "Disposicions generals"
+            }
+            new_node = {
+                "id": node_id_str,
+                "labels": ["Document"],
+                "properties": props
+            }
+            self.graph_data["nodes"].append(new_node)
+            self.nodes_by_id[node_id_str] = new_node
+            self.document_nodes.append(new_node)
+            print(f"  [Imported Master Document Node] ID={node_id_str} | Title='{doc_title[:60]}'")
+            return new_node
+
+        # Check cido_nodes.json
+        if node_id_str in self.h_cido_by_id:
+            h_cido = self.h_cido_by_id[node_id_str]
+            cido_title = h_cido.get("title") or f"CIDO Record {node_id_str}"
+            props = {
+                "title": cido_title,
+                "titleEs": cido_title,
+                "titleCa": cido_title,
+                "documentDate": h_cido.get("date") or "",
+                "urlCido": h_cido.get("urlCido") or "",
+                "imported_from_hierarchical_catalog": True
+            }
+            new_node = {
+                "id": node_id_str,
+                "labels": ["Document", "CidoNode"],
+                "properties": props
+            }
+            self.graph_data["nodes"].append(new_node)
+            self.nodes_by_id[node_id_str] = new_node
+            self.document_nodes.append(new_node)
+            print(f"  [Imported Master CIDO Node] ID={node_id_str} | Title='{cido_title[:60]}'")
+            return new_node
+
+        # Check section_nodes.json
+        if node_id_str in self.h_sections_by_id:
+            h_sec = self.h_sections_by_id[node_id_str]
+            sec_title = h_sec.get("title") or f"Section {node_id_str}"
+            doc_id = str(h_sec.get("document_id"))
+            
+            # Make sure parent document is imported/present
+            parent_node = self.import_node_from_hierarchical_catalog(doc_id)
+
+            props = {
+                "title": sec_title,
+                "titleEs": sec_title,
+                "titleCa": sec_title,
+                "sectionId": node_id_str,
+                "type": "Article" if "art" in sec_title.lower() else "Section",
+                "imported_from_hierarchical_catalog": True
+            }
+            new_node = {
+                "id": node_id_str,
+                "labels": ["DocumentSection"],
+                "properties": props
+            }
+            self.graph_data["nodes"].append(new_node)
+            self.nodes_by_id[node_id_str] = new_node
+            
+            # Link HAS_SECTION relationship
+            has_section_rel = {
+                "source": doc_id,
+                "target": node_id_str,
+                "type": "HAS_SECTION",
+                "properties": {
+                    "imported_by": "LLM_Simple_Agent_V3",
+                    "timestamp": int(time.time())
+                }
+            }
+            self.graph_data["relationships"].append(has_section_rel)
+            print(f"  [Imported Master Section Node] ID={node_id_str} under Doc={doc_id} | Title='{sec_title}'")
+            return new_node
+
+        return None
 
     def save_graph(self, path=None):
         if self.graph_data is None:
@@ -176,6 +399,43 @@ class SimpleCitationAgentV3:
             json.dump(self.graph_data, f, ensure_ascii=False, indent=2)
         temp_path.replace(save_path)
         print("Save completed successfully.")
+
+    def get_parent_document_node_id(self, node_id):
+        """
+        Retrieves the top-level Document/Law node ID for any given node_id.
+        If node_id is already a Document/Law/Decree/DOGC node, returns node_id.
+        If node_id is a DocumentSection or Article node, traces its parent structural link.
+        """
+        if node_id is None:
+            return None
+        node = self.nodes_by_id.get(node_id) or self.nodes_by_id.get(str(node_id))
+        if not node and self.hierarchical_loaded:
+            node = self.import_node_from_hierarchical_catalog(node_id)
+
+        if not node:
+            return node_id
+        
+        labels = node.get("labels", [])
+        if any(lbl in labels for lbl in ["Document", "Law", "Decree", "DOGC"]):
+            return node_id
+            
+        # Trace parent document relationship (HAS_SECTION, HAS_DOCUMENT, PART_OF)
+        for rel in self.graph_data.get("relationships", []):
+            if rel.get("type") in ["HAS_SECTION", "HAS_DOCUMENT", "PART_OF"] and (rel.get("target") == node_id or str(rel.get("target")) == str(node_id)):
+                src_id = rel.get("source")
+                src_node = self.nodes_by_id.get(src_id)
+                if src_node:
+                    src_labels = src_node.get("labels", [])
+                    if any(lbl in src_labels for lbl in ["Document", "Law", "Decree", "DOGC"]):
+                        return src_id
+                    return self.get_parent_document_node_id(src_id)
+
+        # Check section_nodes catalog parent document_id
+        node_id_str = str(node_id)
+        if node_id_str in self.h_sections_by_id:
+            return str(self.h_sections_by_id[node_id_str].get("document_id"))
+
+        return node_id
 
     def get_existing_citations_for_node(self, node_id):
         """
@@ -240,15 +500,10 @@ class SimpleCitationAgentV3:
 
     def query_candidate_target_nodes(self, citation_item, max_candidates=25):
         """
-        Queries the graph JSON for candidate target nodes matching citation_item details:
-        1. Filters by year first.
-        2. Filters by law type and document number.
-        3. If there is a match, checks for matching articles/sections in graph.
-           If a precise article/section match exists, includes that article/section node.
-           Also extracts all possible section/article nodes under candidate laws as candidates,
-           as well as parent law nodes.
+        Queries active graph JSON AND Catalonia master hierarchical_output catalog
+        (document_nodes.json, cido_nodes.json, section_nodes.json) for candidate target nodes.
         """
-        if not self.document_nodes:
+        if not self.document_nodes and not self.hierarchical_loaded:
             return []
 
         year = str(citation_item.get("year") or "").strip()
@@ -258,7 +513,7 @@ class SimpleCitationAgentV3:
         raw_text = str(citation_item.get("raw_citation_text") or "").strip().lower()
         art_sec = str(citation_item.get("article_or_section") or "").strip().lower()
 
-        # Step 1: Filter document nodes by year first if year is provided
+        # Step 1: Query active document nodes in graph
         year_matching_docs = []
         if year and re.match(r"^\d{4}$", year):
             for doc in self.document_nodes:
@@ -271,10 +526,9 @@ class SimpleCitationAgentV3:
                 if year in doc_date or year in title or year in eli or year in d_num:
                     year_matching_docs.append(doc)
         
-        # Fall back to all document nodes if no docs matched by year (or year was not specified)
         base_docs = year_matching_docs if year_matching_docs else self.document_nodes
 
-        # Step 2: Score & filter candidate document nodes by doc_number, dogc_number, doc_type, title
+        # Score active graph document nodes
         scored_docs = []
         for doc in base_docs:
             props = doc.get("properties", {})
@@ -304,35 +558,43 @@ class SimpleCitationAgentV3:
             if score > 0:
                 scored_docs.append((score, doc))
 
-        # Sort candidate document nodes by score
         scored_docs.sort(key=lambda x: x[0], reverse=True)
         top_docs = [doc for _, doc in scored_docs[:10]]
 
-        # If no scored docs found, fallback to searching for title keywords in base_docs
-        if not top_docs and raw_text:
-            text_words = set(re.findall(r"\b[a-zA-Zà-üÀ-Ü]{4,}\b", raw_text))
-            stopwords = {"para", "como", "sobre", "entre", "este", "esta", "cada", "ley", "llei", "decret", "decreto", "articulo", "article"}
-            words = text_words - stopwords
-            for doc in base_docs[:50]:
-                props = doc.get("properties", {})
-                title = str(props.get("titleEs") or props.get("titleCa") or props.get("title") or "").lower()
-                if any(w in title for w in words):
-                    top_docs.append(doc)
-                if len(top_docs) >= 5:
-                    break
+        # Step 2: Query Master Hierarchical Catalog maps if loaded
+        if self.hierarchical_loaded:
+            norm_raw = self._normalize_str(raw_text)
+            norm_doc_num = self._normalize_str(doc_num)
 
-        # Step 3: Expand candidate list with precise article matches and section/article nodes
+            # Check document_nodes.json by number
+            if norm_doc_num and norm_doc_num in self.h_docs_by_num:
+                h_doc = self.h_docs_by_num[norm_doc_num]
+                h_id = str(h_doc["id"])
+                if h_id not in self.nodes_by_id:
+                    self.import_node_from_hierarchical_catalog(h_id)
+
+            # Check document_nodes.json by title match
+            if norm_raw and len(norm_raw) > 8:
+                for norm_t, h_doc in list(self.h_docs_by_title.items())[:5000]:
+                    if norm_raw in norm_t or norm_t in norm_raw:
+                        h_id = str(h_doc["id"])
+                        if h_id not in self.nodes_by_id:
+                            self.import_node_from_hierarchical_catalog(h_id)
+
+        # Re-fetch top_docs from document_nodes after hierarchical imports
+        top_docs = [n for n in self.document_nodes if n["id"] in [d["id"] for d in top_docs] or any(str(n["id"]) == str(td["id"]) for td in top_docs)]
+
+        # Expand candidates
         candidates = []
         seen_candidate_ids = set()
 
         norm_art_sec = self._normalize_section_title(art_sec) if art_sec else ""
 
-        for doc in top_docs:
+        for doc in self.document_nodes[:20]:
             doc_id = doc["id"]
             props = doc.get("properties", {})
             doc_title = props.get("titleEs") or props.get("titleCa") or props.get("title") or f"Document {doc_id}"
-            
-            # Add document node itself
+
             if doc_id not in seen_candidate_ids:
                 candidates.append({
                     "node_id": doc_id,
@@ -347,7 +609,6 @@ class SimpleCitationAgentV3:
                 })
                 seen_candidate_ids.add(doc_id)
 
-            # Retrieve section / article nodes under this document
             sections = self.sections_by_document.get(doc_id, [])
             for sec in sections:
                 sec_id = sec["id"]
@@ -376,7 +637,6 @@ class SimpleCitationAgentV3:
                 })
                 seen_candidate_ids.add(sec_id)
 
-        # Sort candidate list: precise article matches first, then Document/Section order
         candidates.sort(key=lambda c: (not c["is_precise_article_match"], c["node_type"] != "Article/Section"))
         return candidates[:max_candidates]
 
@@ -390,22 +650,31 @@ class SimpleCitationAgentV3:
             clean_num = self._normalize_str(doc_number)
             if clean_num in self.nodes_by_doc_number:
                 return self.nodes_by_doc_number[clean_num]
+            if clean_num in self.h_docs_by_num:
+                h_node = self.import_node_from_hierarchical_catalog(self.h_docs_by_num[clean_num]["id"])
+                if h_node:
+                    return h_node["id"]
                 
-        if title:
-            clean_title = self._normalize_str(title)
-            if clean_title in self.nodes_by_title:
-                return self.nodes_by_title[clean_title]
+        clean_title = self._clean_document_title(title)
+        if clean_title:
+            norm_clean = self._normalize_str(clean_title)
+            if norm_clean in self.nodes_by_title:
+                return self.nodes_by_title[norm_clean]
+            if norm_clean in self.h_docs_by_title:
+                h_node = self.import_node_from_hierarchical_catalog(self.h_docs_by_title[norm_clean]["id"])
+                if h_node:
+                    return h_node["id"]
                 
         if dogc_number:
             clean_dogc = self._normalize_str(str(dogc_number))
             if clean_dogc in self.nodes_by_dogc_number:
                 return self.nodes_by_dogc_number[clean_dogc]
                 
-        if title:
-            clean_title = self._normalize_str(title)
-            if len(clean_title) > 10:
+        if clean_title:
+            norm_clean = self._normalize_str(clean_title)
+            if len(norm_clean) > 10:
                 for existing_clean_title, node_id in self.nodes_by_title.items():
-                    if clean_title in existing_clean_title or existing_clean_title in clean_title:
+                    if norm_clean in existing_clean_title or existing_clean_title in norm_clean:
                         return node_id
                         
         return None
@@ -415,6 +684,14 @@ class SimpleCitationAgentV3:
             return None
             
         sections = self.sections_by_document.get(doc_id, [])
+        doc_id_str = str(doc_id)
+
+        # Check section catalog if not in local sections_by_document
+        if not sections and doc_id_str in self.h_sections_by_doc:
+            for h_sec in self.h_sections_by_doc[doc_id_str]:
+                self.import_node_from_hierarchical_catalog(h_sec["id"])
+            sections = self.sections_by_document.get(doc_id, [])
+
         if not sections:
             return None
             
@@ -446,7 +723,13 @@ class SimpleCitationAgentV3:
                         
         return None
 
-    def create_new_target_node(self, title, doc_number, eli_uri, dogc_number, type_of_law, doc_date):
+    def create_new_target_node(self, title, doc_number, eli_uri, dogc_number, type_of_law, doc_date, art_sec=""):
+        """
+        Creates a NEW top-level document node in the graph. Does NOT mutate or rename existing nodes.
+        """
+        clean_title = self._clean_document_title(title, art_sec)
+        final_title = clean_title or title or f"Document {doc_number or self.max_node_id + 1}"
+
         self.max_node_id += 1
         new_id = self.max_node_id
         
@@ -462,9 +745,9 @@ class SimpleCitationAgentV3:
             labels.append(type_label)
             
         props = {
-            "title": title or f"Document {doc_number or new_id}",
-            "titleEs": title or "",
-            "titleCa": title or "",
+            "title": final_title,
+            "titleEs": final_title,
+            "titleCa": final_title,
             "documentNumber": doc_number or "",
             "eliUri": eli_uri or "",
             "dogcNumber": dogc_number or "",
@@ -511,64 +794,47 @@ class SimpleCitationAgentV3:
         print(f"  [Created Target Node] ID={new_id} | Title='{props['title']}' | ELI='{props['eliUri']}'")
         return new_id
 
-    def create_new_section_node(self, doc_id, details):
-        self.max_node_id += 1
-        new_id = self.max_node_id
-        
-        is_article = False
-        details_clean = details.strip()
-        
-        if re.match(r"^(artículo|articulo|article|art|art\.)", details_clean, re.IGNORECASE):
-            is_article = True
-            
-        labels = ["DocumentSection"]
-        if is_article:
-            labels.insert(0, "Article")
-            
-        title = details_clean[0].upper() + details_clean[1:] if details_clean else "Section"
-        existing_count = len(self.sections_by_document.get(doc_id, []))
-        sec_id_str = f"{doc_id}_sec_{existing_count + 1}"
-        
-        props = {
-            "title": title,
-            "titleEs": title,
-            "titleCa": title,
-            "heading": "",
-            "headingEs": "",
-            "headingCa": "",
-            "sectionId": sec_id_str,
-            "type": "Article" if is_article else "Section",
-            "isBilingual": True,
-            "processed_by_llm_agent": True,
-            "created_by_llm_agent": True
-        }
-        
-        new_node = {
-            "id": new_id,
-            "labels": labels,
-            "properties": props
-        }
-        
-        self.graph_data["nodes"].append(new_node)
-        self.nodes_by_id[new_id] = new_node
-        
-        has_section_rel = {
-            "source": doc_id,
-            "target": new_id,
-            "type": "HAS_SECTION",
-            "properties": {
-                "created_by": "LLM_Simple_Agent_V3",
-                "timestamp": int(time.time())
-            }
-        }
-        self.graph_data["relationships"].append(has_section_rel)
-        
-        if doc_id not in self.sections_by_document:
-            self.sections_by_document[doc_id] = []
-        self.sections_by_document[doc_id].append(new_node)
-        
-        print(f"  [Created Section Node] ID={new_id} under Doc={doc_id} | Title='{title}'")
-        return new_id
+    def filter_redundant_dogc_citations(self, citations):
+        """
+        Deduplicates/filters out redundant DOGC bulletin citations if a specific law, decree,
+        or order citation is present in the same extraction set or if the DOGC citation
+        itself references a specific underlying law.
+        """
+        if not citations or not isinstance(citations, list):
+            return []
+
+        has_specific_law_citation = any(
+            str(c.get("doc_type") or "").lower() in [
+                "llei", "decret", "ordre", "resolució", "resolucio", "decret llei",
+                "reial decret", "ley", "decreto", "orden", "acord", "acuerdo"
+            ]
+            or bool(c.get("document_number"))
+            for c in citations if isinstance(c, dict)
+        )
+
+        filtered = []
+        for c in citations:
+            if not isinstance(c, dict):
+                continue
+            doc_type = str(c.get("doc_type") or "").strip().lower()
+            cited_title = str(c.get("cited_document_title") or c.get("raw_citation_text") or "").strip().lower()
+
+            is_dogc_citation = (
+                doc_type == "dogc"
+                or "dogc" in cited_title
+                or "diari oficial" in cited_title
+            )
+
+            if is_dogc_citation:
+                raw_text = str(c.get("raw_citation_text") or "").lower()
+                has_law_ref = bool(re.search(r"\b(llei|ley|decret|decreto|ordre|orden|resoluci[oó])\s+\d+", raw_text))
+                
+                if has_specific_law_citation or has_law_ref:
+                    print(f"  [DOGC Deduplication] Dropping redundant DOGC bulletin citation snippet: '{c.get('raw_citation_text')}' because a specific law citation is present.")
+                    continue
+            filtered.append(c)
+
+        return filtered if filtered else citations
 
     def _parse_json_list(self, text):
         if not text:
@@ -650,6 +916,7 @@ Your task is to analyze the source legal text and extract ALL raw legal citation
 1. **Detect Every Citation**: Extract every reference to another law, decree, order, resolution, edict, local ordinance, or gazette document.
 2. **Detailed Metadata**: For each citation, extract:
    - `"raw_citation_text"`: The exact verbatim snippet from the text containing the citation.
+   - `"cited_document_title"`: The clean canonical title of the overall law/document itself, WITHOUT any article or section prefixes (e.g. "Decreto legislativo 1/1997, de 31 de octubre", "Ley 13/2008, de 5 de noviembre").
    - `"year"`: The year of the cited document (e.g. "2008", "2015", or null if unknown/not mentioned).
    - `"doc_type"`: The document or source type (e.g. "Local", "DOGC", "Edicte", "Llei", "Decret", "Decret llei", "Reial decret", "Ordre", "Resolució", "Constitución").
    - `"document_number"`: The official document identifier number (e.g. "13/2008", "45/2021", or null).
@@ -659,13 +926,19 @@ Your task is to analyze the source legal text and extract ALL raw legal citation
    - `"article_or_section"`: The specific article or section cited (e.g. "artículo 12", "artículo 5.1", "disposición adicional 2ª"), or null if general.
    - `"implied_relationship"`: Initial implied relationship (`CITES`, `MODIFY`, `ABROGATE`, `AFFECTS`). Default to `CITES`.
 
-3. **Split Compound Articles**: If a citation references MULTIPLE articles or sections (e.g., "artículos 5, 8 y 12.3 de la Ley 13/2008"), SPLIT them into separate individual items in the output array (one item with `"article_or_section": "artículo 5"`, one for `"artículo 8"`, and one for `"artículo 12.3"`).
+3. **DOGC Bulletin vs. Specific Law Rules**:
+   - When a text cites a specific Law, Decree, Order, or Resolution (e.g. "Llei 26/2010", "Decret 123/1997") AND also mentions its publication in the DOGC (e.g. "publicada al DOGC núm. 5686"), extract ONLY ONE citation object for the specific Law/Decree itself (`doc_type`: "Llei" / "Decret", `document_number`: "26/2010").
+   - Do NOT create a separate or duplicate citation for the DOGC bulletin when a specific law, decree, or order is identified.
+   - Set `doc_type`: "DOGC" ONLY when the citation refers exclusively to a DOGC gazette/issue number without specifying any underlying law, decree, or order.
+
+4. **Split Compound Articles**: If a citation references MULTIPLE articles or sections (e.g., "artículos 5, 8 y 12.3 de la Ley 13/2008"), SPLIT them into separate individual items in the output array (one item with `"article_or_section": "artículo 5"`, one for `"artículo 8"`, and one for `"artículo 12.3"`).
 
 ### Output Format:
 Output ONLY a raw JSON array of objects. Example:
 [
   {{
     "raw_citation_text": "artículos 5 y 8 de la Ley 13/2008",
+    "cited_document_title": "Ley 13/2008, de 5 de noviembre",
     "year": "2008",
     "doc_type": "Llei",
     "document_number": "13/2008",
@@ -677,6 +950,7 @@ Output ONLY a raw JSON array of objects. Example:
   }},
   {{
     "raw_citation_text": "artículos 5 y 8 de la Ley 13/2008",
+    "cited_document_title": "Ley 13/2008, de 5 de noviembre",
     "year": "2008",
     "doc_type": "Llei",
     "document_number": "13/2008",
@@ -701,7 +975,8 @@ Do not include any explanations or markdown formatting outside the JSON array.
                 temperature=0.1,
                 max_tokens=2000
             )
-            return self._parse_json_list(response.choices[0].message.content)
+            raw_parsed = self._parse_json_list(response.choices[0].message.content)
+            return self.filter_redundant_dogc_citations(raw_parsed)
         except Exception as e:
             print(f"Error in Task 1 (Detection & Decomposition): {e}")
             return []
@@ -733,13 +1008,16 @@ Your task is to match an extracted legal citation against a pre-filtered list of
 ### Instructions:
 1. Examine the extracted citation metadata (`raw_citation_text`, `year`, `doc_type`, `document_number`, `article_or_section`, etc.) and compare it with the candidate nodes.
 2. Select the single best matching `node_id` from the Candidate Target Nodes.
-3. If the citation specifically targets an article or section and a matching Article/Section candidate node exists (or has `is_precise_article_match: true`), select that Article/Section `node_id`. If only the parent Document node exists, select the Document `node_id`.
+3. **General Law vs. Article Resolution**:
+   - If the citation is general (`is_general: true`) or does NOT reference a specific article/section, select the top-level Document (General Law) `node_id`.
+   - If the citation targets a specific article or section AND a matching Article/Section candidate node exists (or has `is_precise_article_match: true`), select that Article/Section `node_id`.
+   - If the specific article or section is NOT found among candidate nodes, select the parent Document (General Law) `node_id`.
 4. If NONE of the candidate nodes accurately match the citation, set `"matched_node_id": null`.
 
 ### Output Format:
 Output ONLY a raw JSON object with the following fields:
 {{
-  "matched_node_id": <integer node_id or null>,
+  "matched_node_id": <string/integer node_id or null>,
   "match_confidence": "EXACT" | "HIGH" | "MEDIUM" | "LOW" | "NONE",
   "reasoning": "<short sentence explaining the match decision>"
 }}
@@ -923,33 +1201,25 @@ Do not include any text or markdown outside the JSON object.
                 final_target_id = None
 
                 art_sec = cit_item.get("article_or_section") or ""
-                cited_title = cit_item.get("raw_citation_text") or ""
+                is_general = bool(cit_item.get("is_general"))
+                cited_doc_title = cit_item.get("cited_document_title") or ""
+                raw_cit_text = cit_item.get("raw_citation_text") or ""
+                cited_title = self._clean_document_title(cited_doc_title or raw_cit_text, art_sec) or raw_cit_text
                 doc_number = cit_item.get("document_number") or ""
                 eli_uri = cit_item.get("eli_uri") or ""
                 dogc_number = cit_item.get("dogc_number") or ""
                 type_of_law = cit_item.get("doc_type") or ""
                 doc_date = cit_item.get("year") or ""
 
-                if matched_node_id and matched_node_id in self.nodes_by_id:
-                    matched_node = self.nodes_by_id[matched_node_id]
-                    matched_labels = matched_node.get("labels", [])
-
-                    if "DocumentSection" in matched_labels or "Article" in matched_labels:
-                        final_target_id = matched_node_id
-                    else:
-                        # Matched a Document node; refine to article/section if specified
-                        if art_sec:
-                            sec_id = self.match_section_in_document(matched_node_id, art_sec)
-                            if sec_id is not None:
-                                final_target_id = sec_id
-                            else:
-                                sec_id = self.create_new_section_node(matched_node_id, art_sec)
-                                final_target_id = sec_id
-                                new_nodes_created += 1
-                        else:
-                            final_target_id = matched_node_id
+                parent_doc_id = None
+                if matched_node_id:
+                    matched_node_id_str = str(matched_node_id)
+                    if matched_node_id_str not in self.nodes_by_id and matched_node_id not in self.nodes_by_id:
+                        if self.hierarchical_loaded:
+                            self.import_node_from_hierarchical_catalog(matched_node_id_str)
+                    
+                    parent_doc_id = self.get_parent_document_node_id(matched_node_id)
                 else:
-                    # Fallback node resolution/creation if LLM returned null match
                     target_doc_id = self.resolve_target_node(cited_title, doc_number, eli_uri, dogc_number)
                     if target_doc_id is None:
                         target_doc_id = self.create_new_target_node(
@@ -958,24 +1228,31 @@ Do not include any text or markdown outside the JSON object.
                             eli_uri=eli_uri,
                             dogc_number=dogc_number,
                             type_of_law=type_of_law,
-                            doc_date=doc_date
+                            doc_date=doc_date,
+                            art_sec=art_sec
                         )
                         new_nodes_created += 1
+                    parent_doc_id = self.get_parent_document_node_id(target_doc_id)
 
-                    final_target_id = target_doc_id
-                    if art_sec:
-                        sec_id = self.match_section_in_document(target_doc_id, art_sec)
-                        if sec_id is not None:
-                            final_target_id = sec_id
-                        else:
-                            sec_id = self.create_new_section_node(target_doc_id, art_sec)
-                            final_target_id = sec_id
-                            new_nodes_created += 1
+                # Target Node Resolution Rules:
+                # 1. If NO specific article or section is cited (or is_general is True), point to the General Law (Document) node.
+                # 2. If a specific article or section is cited:
+                #    - Search for it in parent_doc_id. If found, point to that specific Article/Section node.
+                #    - If NOT found, FALLBACK to point to the General Law (parent Document) node.
+                if not art_sec or is_general:
+                    final_target_id = parent_doc_id
+                else:
+                    sec_id = self.match_section_in_document(parent_doc_id, art_sec)
+                    if sec_id is not None:
+                        final_target_id = sec_id
+                    else:
+                        # Article/section not found -> Fallback to General Law Node!
+                        final_target_id = parent_doc_id
 
                 if final_target_id is None:
                     continue
 
-                target_node_obj = self.nodes_by_id.get(final_target_id, {})
+                target_node_obj = self.nodes_by_id.get(final_target_id) or self.nodes_by_id.get(str(final_target_id))
                 t_props = target_node_obj.get("properties", {}) if target_node_obj else {}
                 target_info = {
                     "title": t_props.get("titleEs") or t_props.get("titleCa") or t_props.get("title") or f"Node {final_target_id}",
@@ -1221,7 +1498,7 @@ Do not include any text or markdown outside the JSON object.
         
         parent_doc_by_section_id = {}
         for r in rels:
-            if r.get("type") == "HAS_SECTION":
+            if r.get("type") in ["HAS_SECTION", "HAS_DOCUMENT", "PART_OF"]:
                 src_id = r.get("source")
                 sec_id = r.get("target")
                 p_node = self.nodes_by_id.get(src_id)
@@ -1384,6 +1661,7 @@ def main():
     parser = argparse.ArgumentParser(description="Multi-Step Simple Citation Agent V3")
     parser.add_argument("--input-json", default="data/extracted_subgraph_custom.json", help="Path to input graph JSON")
     parser.add_argument("--output-json", default="data/extracted_subgraph_custom_updated.json", help="Path to output graph JSON")
+    parser.add_argument("--hierarchical-dir", default=None, help="Path to Catalonia/data/hierarchical_output directory for master node lookup")
     parser.add_argument("--vllm-url", default="http://127.0.0.1:8000/v1", help="URL of vLLM Server")
     parser.add_argument("--vllm-model-name", default="/gpfs/projects/bsc100/models/DeepSeek-R1-Distill-Qwen-32B", help="Model path/name used on vLLM server")
     parser.add_argument("--max-candidates", type=int, default=25, help="Max candidate document/article nodes to retrieve for prompt context catalog")
