@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+"""
+generate_cido_map.py
+
+Fetches CIDO database records across modules (normatives-locals, subvencions, contractacions, oposicions, convenis),
+resolves related document links and materies (descriptors), matches DOGC documents, and outputs cido_to_dogc_map.json.
+
+Supports incremental update mode (--incremental) to only fetch newly published records since last run.
+"""
+
 import os
 import re
 import sys
@@ -33,12 +43,14 @@ class CustomSSLAdapter(HTTPAdapter):
         kwargs['ssl_context'] = context
         return super(CustomSSLAdapter, self).init_poolmanager(*args, **kwargs)
 
-api_session = requests.Session()
-api_session.mount('https://', CustomSSLAdapter())
-api_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Referer": "https://cido.diba.cat/"
-})
+def setup_api_session():
+    session = requests.Session()
+    session.mount('https://', CustomSSLAdapter())
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://cido.diba.cat/"
+    })
+    return session
 
 def normalize_title(title):
     if not title:
@@ -102,10 +114,36 @@ def fetch_documents_for_record(api_session, module, cido_id, verbose=False):
             print(f"  Warning: Failed to fetch documents for record {cido_id}: {e}")
     return []
 
-def fetch_all_records_for_module(api_session, module, limit_limit=None, verbose=False):
+def fetch_materies_for_record(api_session, module, cido_id, verbose=False):
+    rel_materies_url = f"https://api.diba.cat/dadesobertes/cido/v1/{module}/{cido_id}/materies"
+    try:
+        r_mat = api_session.get(rel_materies_url, timeout=10)
+        if r_mat.status_code == 200:
+            raw_data = r_mat.json().get("data") or []
+            materies = []
+            for item in raw_data:
+                m_id = str(item.get("id") or "")
+                attrs = item.get("attributes") or {}
+                m_name = attrs.get("materia") or ""
+                if m_name:
+                    materies.append({"id": m_id, "name": m_name})
+            return materies
+    except Exception as e:
+        if verbose:
+            print(f"  Warning: Failed to fetch materies for record {cido_id}: {e}")
+    return []
+
+def fetch_record_details(api_session, module, cido_id, verbose=False):
+    docs = fetch_documents_for_record(api_session, module, cido_id, verbose=verbose)
+    mats = fetch_materies_for_record(api_session, module, cido_id, verbose=verbose)
+    return docs, mats
+
+def fetch_all_records_for_module(api_session, module, existing_ids=None, limit_limit=None, verbose=False):
     records = []
     limit = 100
     offset = 0
+    stop_early = False
+    
     while True:
         url = f"https://api.diba.cat/dadesobertes/cido/v1/{module}?sort=-maxDataPublicacioDocument&page[limit]={limit}&page[offset]={offset}"
         try:
@@ -116,10 +154,24 @@ def fetch_all_records_for_module(api_session, module, limit_limit=None, verbose=
             data = r.json().get("data") or []
             if not data:
                 break
-            records.extend(data)
+                
+            new_batch = []
+            for item in data:
+                c_id = str(item.get("id") or "")
+                if existing_ids and c_id in existing_ids:
+                    stop_early = True
+                    break
+                new_batch.append(item)
+                
+            records.extend(new_batch)
             
             if verbose:
-                print(f"  Paged offset {offset}: retrieved {len(data)} records...")
+                print(f"  Paged offset {offset}: retrieved {len(new_batch)} new records...")
+                
+            if stop_early:
+                if verbose:
+                    print(f"  Reached already-scraped record in {module}. Stopping incremental pagination.")
+                break
                 
             if limit_limit and len(records) >= limit_limit:
                 records = records[:limit_limit]
@@ -155,22 +207,46 @@ def descriptions_are_similar(desc1, desc2, threshold=0.82):
     if ratio >= threshold:
         return True
         
-    # Check if they share distinctive long keywords (>= 5 chars)
     long_words1 = {w for w in t1 if len(w) >= 5}
     long_words2 = {w for w in t2 if len(w) >= 5}
     if long_words1 and long_words2:
         shared_long = long_words1.intersection(long_words2)
-        # If they share at least 2 long words (e.g. 'draper', 'parcial')
         if len(shared_long) >= 2:
             return True
             
     return False
 
+def get_source_priority(doc, dogc_by_id):
+    attrs = doc.get("attributes") or {}
+    butlleti = (attrs.get("butlleti") or "").upper()
+    url = attrs.get("urlPdf") or attrs.get("urlHtml") or ""
+    c_id = extract_doc_id_from_url(url)
+    
+    if butlleti == "DOGC":
+        if c_id and str(c_id) in dogc_by_id:
+            return 4  # DOGC with matched documentId in DOGC database
+        return 3      # DOGC gazette
+    elif butlleti.startswith("BOP"):
+        return 2      # Provincial Bulletins (BOPB, BOPG, BOPL, BOPT)
+    else:
+        return 1      # Other (BOE, TA, GASETA, etc.)
+
+def check_url_active(api_session, url, timeout=5):
+    if not url:
+        return False, None
+    try:
+        r = api_session.head(url, allow_redirects=True, timeout=timeout)
+        if r.status_code in [200, 301, 302, 303, 307, 308]:
+            return True, r.status_code
+        r_get = api_session.get(url, allow_redirects=True, stream=True, timeout=timeout)
+        r_get.close()
+        if r_get.status_code == 200:
+            return True, 200
+        return False, r_get.status_code
+    except Exception:
+        return False, None
+
 def deduplicate_documents(rel_docs, dogc_by_id):
-    """
-    Deduplicates related CIDO documents by grouping them under the same phase
-    and clustering them based on description similarity and time-proximity.
-    """
     by_phase = {}
     for doc in rel_docs:
         attrs = doc.get("attributes") or {}
@@ -181,13 +257,11 @@ def deduplicate_documents(rel_docs, dogc_by_id):
         
     deduped = []
     for phase, group in by_phase.items():
-        clusters = [] # list of lists of docs
-        
+        clusters = []
         for doc in group:
             attrs = doc.get("attributes") or {}
             obs = attrs.get("observacionsFase") or attrs.get("resum") or ""
             obs_clean = normalize_title(obs)
-            date = parse_date(attrs.get("dataPublicacio"))
             
             merged = False
             for cluster in clusters:
@@ -195,113 +269,110 @@ def deduplicate_documents(rel_docs, dogc_by_id):
                 rep_attrs = rep.get("attributes") or {}
                 rep_obs = rep_attrs.get("observacionsFase") or rep_attrs.get("resum") or ""
                 rep_obs_clean = normalize_title(rep_obs)
-                rep_date = parse_date(rep_attrs.get("dataPublicacio"))
                 
-                similar = descriptions_are_similar(obs_clean, rep_obs_clean, threshold=0.82)
-                close_date = True
-                if date and rep_date:
-                    days_diff = abs((date - rep_date).days)
-                    if days_diff > 90:
-                        close_date = False
-                        
-                if similar and close_date:
+                if descriptions_are_similar(obs_clean, rep_obs_clean, threshold=0.82):
                     cluster.append(doc)
                     merged = True
                     break
-                    
             if not merged:
                 clusters.append([doc])
                 
-        # Select best document version for each cluster
         for cluster in clusters:
-            best_doc = None
-            best_score = -1
-            
+            # Track all publishing sources across cluster items
+            all_sources = set()
             for doc in cluster:
-                attrs = doc.get("attributes") or {}
-                butlleti = attrs.get("butlleti")
-                url_pdf = attrs.get("urlPdf")
-                
-                score = 0
-                if url_pdf:
-                    score += 1
-                if butlleti == "BOPB":
-                    score += 2
-                elif butlleti == "DOGC":
-                    score += 4
-                    dogc_id = None
-                    for url_key in ["urlPdf", "urlHtml"]:
-                        url = attrs.get(url_key)
-                        if url:
-                            dogc_id = extract_doc_id_from_url(url)
-                            if dogc_id:
-                                break
-                    if dogc_id and dogc_id in dogc_by_id:
-                        score += 8
-                        
-                if score > best_score:
-                    best_score = score
-                    best_doc = doc
+                b = (doc.get("attributes") or {}).get("butlleti")
+                if b:
+                    all_sources.add(b)
+            all_sources_list = sorted(list(all_sources))
+            
+            # Select best document based on priority hierarchy: DOGC > BOP > Other
+            best_doc = cluster[0]
+            best_prio = get_source_priority(best_doc, dogc_by_id)
+            for candidate in cluster[1:]:
+                cand_prio = get_source_priority(candidate, dogc_by_id)
+                if cand_prio > best_prio:
+                    best_doc = candidate
+                    best_prio = cand_prio
                     
-            if best_doc:
-                deduped.append(best_doc)
-                
+            # Attach source tracking properties
+            best_doc["_all_sources"] = all_sources_list
+            best_doc["_is_multi_source"] = len(all_sources_list) > 1
+            deduped.append(best_doc)
+            
     return deduped
 
-
 def main():
-    parser = argparse.ArgumentParser(description="Generate a unified map from CIDO to DOGC documents")
-    parser.add_argument("--limit-per-module", type=int, default=0, help="Number of records to fetch per module (default: 0, which fetches all)")
-    parser.add_argument("--modules", type=str, default="normatives-locals,subvencions,contractacions,oposicions,convenis", help="Comma-separated CIDO modules to query")
-    parser.add_argument("--output", type=str, default="data/cido_to_dogc_map.json", help="Path to save the generated mapping JSON")
-    parser.add_argument("--csv-output", type=str, default="data/cido_to_dogc_map.csv", help="Path to save the generated mapping CSV")
-    parser.add_argument("--verbose", action="store_true", help="Print verbose progression logs")
+    parser = argparse.ArgumentParser(description="Generate CIDO document JSON map with DOGC document matching and materies")
+    parser.add_argument("--data-dir", type=str, default="data", help="Directory containing data files")
+    parser.add_argument("--output", type=str, default=None, help="Path for output JSON map")
+    parser.add_argument("--csv-output", type=str, default=None, help="Path for summary CSV map")
+    parser.add_argument("--limit-per-module", type=int, default=None, help="Limit number of records per CIDO module")
+    parser.add_argument("--workers", type=int, default=20, help="Number of concurrent thread workers for detail fetching")
+    parser.add_argument("--incremental", action="store_true", help="Incremental mode: stop pagination when encountering already-scraped records")
+    parser.add_argument("--check-urls", action="store_true", help="Verify live reachability of publication URLs and flag eliminated ones")
+    parser.add_argument("--skip-resolve", action="store_true", help="Skip automatic execution of resolve_unresolved_dogc post-processing")
     args = parser.parse_args()
 
-    cat_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    data_dir = os.path.join(cat_root, "data")
-    output_path = os.path.join(cat_root, args.output)
-    csv_output_path = os.path.join(cat_root, args.csv_output)
-    
-    dogc_by_id, dogc_by_title = load_dogc_reference_data(data_dir, verbose=args.verbose)
-    
-    target_modules = [m.strip() for m in args.modules.split(",")]
-    cido_mappings = []
-    
-    for module in target_modules:
-        limit_val = args.limit_per_module if args.limit_per_module > 0 else None
-        if limit_val:
-            print(f"\nFetching up to {limit_val} records from module '{module}'...")
-        else:
-            print(f"\nFetching ALL available records from module '{module}' via pagination...")
-            
+    data_dir = os.path.abspath(args.data_dir if os.path.isabs(args.data_dir) else os.path.join(parent_dir, args.data_dir))
+    default_json = os.path.join(data_dir, "cido_documents.json")
+    if not os.path.exists(default_json) and os.path.exists(os.path.join(data_dir, "cido_to_dogc_map.json")):
+        default_json = os.path.join(data_dir, "cido_to_dogc_map.json")
+    output_path = os.path.abspath(args.output if args.output else default_json)
+    csv_output_path = os.path.abspath(args.csv_output if args.csv_output else os.path.join(data_dir, "cido_documents.csv"))
+
+    api_session = setup_api_session()
+    dogc_by_id, dogc_by_title = load_dogc_reference_data(data_dir, verbose=True)
+
+    # Load existing CIDO mappings if incremental
+    existing_mappings = []
+    existing_ids = set()
+    if args.incremental and os.path.exists(output_path):
+        print(f"Loading existing CIDO mappings from {output_path} for incremental update...")
         try:
-            records = fetch_all_records_for_module(api_session, module, limit_val, args.verbose)
+            with open(output_path, "r", encoding="utf-8") as f:
+                existing_mappings = json.load(f)
+            for r in existing_mappings:
+                cid = r.get("cidoId")
+                if cid:
+                    existing_ids.add(str(cid))
+            print(f"Loaded {len(existing_mappings)} existing CIDO records.")
         except Exception as e:
-            print(f"Failed to query module '{module}': {e}")
+            print(f"Warning loading existing CIDO map: {e}")
+
+    modules = ["normatives-locals", "subvencions", "contractacions", "oposicions", "convenis"]
+    new_cido_mappings = []
+
+    for module in modules:
+        print(f"\nFetching records from module '{module}' via pagination...")
+        records = fetch_all_records_for_module(api_session, module, existing_ids=existing_ids if args.incremental else None, limit_limit=args.limit_per_module, verbose=True)
+        print(f"Retrieved {len(records)} new records for module '{module}'. Resolving related details in parallel...")
+        
+        if not records:
             continue
             
-        print(f"Retrieved {len(records)} records. Resolving related documents in parallel...")
-        
-        rec_to_docs = {}
-        with ThreadPoolExecutor(max_workers=20) as executor:
-            futures = {
-                executor.submit(fetch_documents_for_record, api_session, module, rec.get("id"), args.verbose): rec
-                for rec in records
-            }
-            for future in futures:
-                rec = futures[future]
-                rec_to_docs[rec.get("id")] = future.result()
-                
-        for i, record in enumerate(records, 1):
-            cido_id = record.get("id")
-            attrs = record.get("attributes") or {}
-            title = attrs.get("titol") or "Unknown Title"
+        def process_record(rec):
+            c_id = rec.get("id")
+            docs, mats = fetch_record_details(api_session, module, c_id)
+            return c_id, docs, mats
+            
+        rec_to_details = {}
+        with ThreadPoolExecutor(max_workers=args.workers) as executor:
+            futures = [executor.submit(process_record, r) for r in records]
+            for fut in futures:
+                try:
+                    c_id, docs, mats = fut.result()
+                    rec_to_details[c_id] = (docs, mats)
+                except Exception as e:
+                    pass
+                    
+        for rec in records:
+            cido_id = str(rec.get("id"))
+            attrs = rec.get("attributes") or {}
+            title = attrs.get("titol") or "Untitled Record"
             date_published = attrs.get("maxDataPublicacioDocument")
             
-            rel_docs = rec_to_docs.get(cido_id) or []
-            
-            # Filter and deduplicate: keep only one version per phase, prioritizing DOGC versions
+            rel_docs, materies = rec_to_details.get(cido_id) or ([], [])
             deduped_docs = deduplicate_documents(rel_docs, dogc_by_id)
             
             mapped_docs = []
@@ -312,7 +383,6 @@ def main():
                 url_html = d_attrs.get("urlHtml")
                 fase = d_attrs.get("fase")
                 
-                # Check DOGC overlap
                 appears_in_dogc = False
                 dogc_id = None
                 
@@ -326,7 +396,6 @@ def main():
                     if dogc_id:
                         appears_in_dogc = True
                 
-                # Title-based fallback if direct ID check fails
                 if not appears_in_dogc and dogc_by_title:
                     norm_title = normalize_title(title)
                     if norm_title in dogc_by_title:
@@ -336,14 +405,18 @@ def main():
                 
                 matching_record_summary = None
                 if appears_in_dogc and dogc_id and dogc_id in dogc_by_id:
-                    rec = dogc_by_id[dogc_id]
+                    rec_dogc = dogc_by_id[dogc_id]
                     matching_record_summary = {
-                        "documentId": rec.get("documentId"),
-                        "title": rec.get("title"),
-                        "dateDOGC": rec.get("dateDOGC"),
-                        "organisme": rec.get("organisme")
+                        "documentId": rec_dogc.get("documentId"),
+                        "title": rec_dogc.get("title"),
+                        "dateDOGC": rec_dogc.get("dateDOGC"),
+                        "organisme": rec_dogc.get("organisme")
                     }
                 
+                # Active URL reachability check
+                target_url = url_pdf or url_html
+                is_url_active, status_code = check_url_active(api_session, target_url) if args.check_urls else (True, 200)
+
                 mapped_docs.append({
                     "fase": fase,
                     "descripcio": d_attrs.get("observacionsFase") or d_attrs.get("resum") or "",
@@ -352,13 +425,17 @@ def main():
                     "dataPublicacio": d_attrs.get("dataPublicacio"),
                     "urlPdf": url_pdf,
                     "urlHtml": url_html,
+                    "isUrlActive": is_url_active,
+                    "urlStatus": "active" if is_url_active else "eliminated",
+                    "urlStatusCode": status_code,
+                    "allSources": d.get("_all_sources") or ([butlleti] if butlleti else []),
+                    "isMultiSource": d.get("_is_multi_source", False),
                     "esVigent": d_attrs.get("esVigent"),
                     "appearsInDogc": appears_in_dogc,
                     "dogcDocumentId": dogc_id,
                     "matchingDogcRecord": matching_record_summary
                 })
                 
-            # Unpack rich metadata attributes
             institucio = attrs.get("institucioDesenvolupat") or attrs.get("ambit") or "Unknown"
             es_vigent = attrs.get("esVigent")
             identificador = attrs.get("identificador")
@@ -389,7 +466,7 @@ def main():
                 detalls["expedient"] = attrs.get("expedient")
                 detalls["dataFinalitzacio"] = attrs.get("dataFinalitzacio")
 
-            cido_mappings.append({
+            new_cido_mappings.append({
                 "cidoId": cido_id,
                 "type": module,
                 "identificador": identificador,
@@ -400,104 +477,25 @@ def main():
                 "date": date_published,
                 "location": location,
                 "detalls": detalls,
+                "materies": materies,
                 "documents": mapped_docs
             })
-            
-    # Write mapped structure to output JSON
+
+    final_cido_mappings = new_cido_mappings + existing_mappings
+    print(f"\nTotal CIDO mappings (new: {len(new_cido_mappings)}, total: {len(final_cido_mappings)}). Saving to {output_path}...")
+    
     try:
         with open(output_path, "w", encoding="utf-8") as out:
-            json.dump(cido_mappings, out, indent=2, ensure_ascii=False)
-        print(f"\nSuccessfully generated CIDO document JSON map at: {output_path}")
-        print(f"Total mapped records: {len(cido_mappings)}")
+            json.dump(final_cido_mappings, out, indent=2, ensure_ascii=False)
+        print(f"Successfully generated CIDO document JSON map at: {output_path}")
+
+        if not getattr(args, 'skip_resolve', False):
+            print("\n[Post-Processing] Running automatic resolution of unresolved DOGC entries (resolve_unresolved_dogc.py)...")
+            resolve_script = os.path.join(script_dir, "resolve_unresolved_dogc.py")
+            if os.path.exists(resolve_script):
+                subprocess.run([sys.executable, resolve_script, "--input", output_path], check=False)
     except Exception as e:
         print(f"Error saving output JSON to {output_path}: {e}", file=sys.stderr)
-
-    # Write mapped structure to aggregated CSV
-    headers = [
-        "Module Type", "Total Records", "Records with 0 Docs", "Records with 1 Doc", "Records with >1 Docs",
-        "Resolved DOGC Docs", "Unresolved DOGC Docs", "Other Sources Docs", "Total Docs"
-    ]
-    try:
-        with open(csv_output_path, "w", encoding="utf-8", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=headers)
-            writer.writeheader()
-            
-            by_type = {}
-            for r in cido_mappings:
-                m_type = r.get("type") or "unknown"
-                if m_type not in by_type:
-                    by_type[m_type] = []
-                by_type[m_type].append(r)
-                
-            totals = {
-                "Module Type": "Total / All Modules",
-                "Total Records": 0,
-                "Records with 0 Docs": 0,
-                "Records with 1 Doc": 0,
-                "Records with >1 Docs": 0,
-                "Resolved DOGC Docs": 0,
-                "Unresolved DOGC Docs": 0,
-                "Other Sources Docs": 0,
-                "Total Docs": 0
-            }
-            
-            for m_type in sorted(by_type.keys()):
-                group = by_type[m_type]
-                total_rec = len(group)
-                zeros = 0
-                ones = 0
-                manys = 0
-                resolved = 0
-                unresolved = 0
-                others = 0
-                
-                for r in group:
-                    docs = r.get("documents") or []
-                    num_docs = len(docs)
-                    if num_docs == 0:
-                        zeros += 1
-                    elif num_docs == 1:
-                        ones += 1
-                    else:
-                        manys += 1
-                        
-                    for d in docs:
-                        butlleti = d.get("butlleti")
-                        if butlleti == "DOGC":
-                            if d.get("appearsInDogc") and d.get("matchingDogcRecord"):
-                                resolved += 1
-                            else:
-                                unresolved += 1
-                        else:
-                            others += 1
-                            
-                tot_docs = resolved + unresolved + others
-                row = {
-                    "Module Type": m_type,
-                    "Total Records": total_rec,
-                    "Records with 0 Docs": zeros,
-                    "Records with 1 Doc": ones,
-                    "Records with >1 Docs": manys,
-                    "Resolved DOGC Docs": resolved,
-                    "Unresolved DOGC Docs": unresolved,
-                    "Other Sources Docs": others,
-                    "Total Docs": tot_docs
-                }
-                writer.writerow(row)
-                
-                totals["Total Records"] += total_rec
-                totals["Records with 0 Docs"] += zeros
-                totals["Records with 1 Doc"] += ones
-                totals["Records with >1 Docs"] += manys
-                totals["Resolved DOGC Docs"] += resolved
-                totals["Unresolved DOGC Docs"] += unresolved
-                totals["Other Sources Docs"] += others
-                totals["Total Docs"] += tot_docs
-                
-            writer.writerow(totals)
-        print(f"Successfully generated CIDO document CSV map at: {csv_output_path}")
-    except Exception as e:
-        print(f"Error saving output CSV to {csv_output_path}: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()

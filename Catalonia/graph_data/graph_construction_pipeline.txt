@@ -1,0 +1,15 @@
+Pipeline Manager: 
+
+Step 1 refresh DoGC:
+ - Check for new DoGC --> Scrape them
+ - From the new DoGC take the full List of new DoGC Documents
+ - Take XML files parse them to get text, descriptors Affectactions
+ - Use Regex to get Additional citations to Text
+ - Create new edges and nodes
+Step 2 refresh Cido:
+ - Check for new Cido Documents (with materia) 
+ - Check if they are in DoGC, also with resolved unresolved
+ - If they are in DoGc Map to it
+ - if they are in BoPB, BoPG, BoPL, BoPT dowload the pdf parse it to get the structured text
+ - Use Regex to find citations in the text
+ - Create nodes and Edges

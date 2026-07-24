@@ -206,9 +206,9 @@ def main():
     parser.add_argument("--limit", type=int, default=200, help="Maximum number of unresolved DOGC entries to process (default: 200, set 0 for all)")
     parser.add_argument("--min-year", type=int, default=2005, help="Minimum publication year to attempt matching (default: 2005, skips pre-2005 scanned PDFs)")
     parser.add_argument("--force", action="store_true", help="Re-attempt entries that were previously flagged as attempted")
-    parser.add_argument("--input", type=str, default="data/cido_to_dogc_map.json", help="Path to cido_to_dogc_map.json")
+    parser.add_argument("--input", type=str, default="data/cido_documents.json", help="Path to cido_documents.json")
     parser.add_argument("--dogc-json", type=str, default="data/dogc_documents.json", help="Path to dogc_documents.json")
-    parser.add_argument("--csv-output", type=str, default="data/cido_to_dogc_map.csv", help="Path to save updated CSV summary")
+    parser.add_argument("--csv-output", type=str, default="data/cido_documents.csv", help="Path to save updated CSV summary")
     parser.add_argument("--verbose", action="store_true", help="Print verbose resolution logs")
     args = parser.parse_args()
 

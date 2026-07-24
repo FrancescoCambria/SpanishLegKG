@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LawGraph - Document Annotator</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <!-- App Container -->
+    <div id="app">
+        <!-- Top Navigation Bar -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="logo-icon">⚖️</div>
+                <div class="brand-text">
+                    <h1>LawGraph <span class="badge-v">Annotator</span></h1>
+                    <span class="subtext">Document Intelligence & Section Parsing Suite</span>
+                </div>
+            </div>
+
+            <div class="source-selector-wrapper">
+                <label for="sourceSelect">Dataset Source:</label>
+                <div class="select-container">
+                    <select id="sourceSelect" class="styled-select">
+                        <option value="Catalonia/data/cido_subset_100.json">cido_subset_100.json (100 docs)</option>
+                        <option value="Catalonia/data/cido_structured_output">cido_structured_output (Directory)</option>
+                        <option value="National/data/boe_documents.json">boe_documents.json</option>
+                    </select>
+                    <button id="btnCustomSource" class="btn btn-secondary btn-icon-only" title="Load custom source path">📁</button>
+                </div>
+            </div>
+
+            <!-- Doc Navigation Control -->
+            <div class="nav-controls">
+                <button id="btnPrevDoc" class="btn btn-nav" title="Previous document (Left Arrow)">◀ Prev</button>
+                <div class="doc-counter">
+                    <span id="currentDocIndex">1</span> / <span id="totalDocsCount">100</span>
+                </div>
+                <button id="btnNextDoc" class="btn btn-nav" title="Next document (Right Arrow)">Next ▶</button>
+            </div>
+
+            <div class="header-actions">
+                <button id="btnOpenDocList" class="btn btn-primary">
+                    <span class="icon">📄</span> Document List
+                </button>
+                <button id="btnOpenSettings" class="btn btn-secondary">
+                    <span class="icon">⚙️</span> Settings
+                </button>
+                <button id="btnExportCsv" class="btn btn-success">
+                    <span class="icon">📥</span> Export CSV
+                </button>
+                <button id="btnToggleTheme" class="btn btn-ghost btn-icon-only" title="Toggle theme">🌙</button>
+            </div>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="workspace">
+            <!-- Left Metadata Sidebar -->
+            <aside class="sidebar metadata-sidebar">
+                <div class="sidebar-header">
+                    <h3>Document Overview</h3>
+                    <span id="docStatusBadge" class="status-badge status-pending">Unannotated</span>
+                </div>
+
+                <div class="metadata-card" id="docMetadataCard">
+                    <!-- Dynamic metadata rendered here -->
+                    <div class="skeleton-loader"></div>
+                </div>
+
+                <div class="property-picker-box">
+                    <label for="activePropSelect">Active Property to Annotate:</label>
+                    <select id="activePropSelect" class="styled-select">
+                        <option value="urlPdf">📄 Official PDF Text (urlPdf)</option>
+                        <option value="urlHtml">🌐 Official HTML Text (urlHtml)</option>
+                        <option value="descripcio">📝 Description (descripcio)</option>
+                        <option value="auto">✨ Combined Fields</option>
+                    </select>
+                </div>
+
+                <div class="stats-card">
+                    <h4>Annotation Summary</h4>
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <span class="stat-num" id="statDocAnnotations">0</span>
+                            <span class="stat-label">Annotations</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-num" id="statDocTables">0</span>
+                            <span class="stat-label">KV Tables</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-num" id="statTotalGlobalAnns">0</span>
+                            <span class="stat-label">Dataset Total</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="keyboard-shortcuts-box">
+                    <div class="kb-header">Keyboard Shortcuts</div>
+                    <ul class="kb-list">
+                        <li><kbd>Alt</kbd> + <kbd>←</kbd> / <kbd>→</kbd> : Prev/Next Doc</li>
+                        <li><kbd>Alt</kbd> + <kbd>L</kbd> : Open Document List</li>
+                        <li><kbd>Esc</kbd> : Close Modals / Selection</li>
+                    </ul>
+                </div>
+            </aside>
+
+            <!-- Main Document Viewer -->
+            <section class="doc-viewer-container">
+                <div class="doc-viewer-header">
+                    <div class="doc-title-row">
+                        <h2 id="docMainTitle">Loading document...</h2>
+                        <span id="docIdBadge" class="badge-id">ID: ---</span>
+                    </div>
+                    <!-- Property Tabs -->
+                    <div class="property-tabs" id="propertyTabs">
+                        <!-- Dynamic Property Tabs -->
+                    </div>
+                </div>
+
+                <!-- Text Search Filter Bar -->
+                <div class="text-search-bar">
+                    <span class="search-icon">🔍</span>
+                    <input type="text" id="textSearchInput" placeholder="Find text in document..." />
+                    <span id="searchResultsCount" class="search-count"></span>
+                </div>
+
+                <!-- Interactive Text Container -->
+                <div class="doc-content-wrapper">
+                    <div id="docTextContainer" class="doc-text-content">
+                        <!-- Highlightable Text Rendered Here -->
+                    </div>
+
+                    <!-- Floating Selection Popover -->
+                    <div id="selectionPopover" class="selection-popover hidden">
+                        <button id="btnAnnotateSelection" class="btn btn-primary btn-sm">
+                            ✨ Annotate Selection
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Right Annotations Sidebar -->
+            <aside class="sidebar annotations-sidebar">
+                <div class="sidebar-header">
+                    <h3>Processed Annotations</h3>
+                    <span class="annotation-count-pill" id="annSidebarCount">0</span>
+                </div>
+
+                <div class="filter-categories-bar" id="categoryFilterBar">
+                    <button class="cat-filter-chip active" data-cat="ALL">All</button>
+                    <!-- Category chips rendered dynamically -->
+                </div>
+
+                <div id="annotationsList" class="annotations-list">
+                    <!-- Annotations cards rendered here -->
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <!-- Annotation Modal / Composer -->
+    <div id="annotationModal" class="modal-overlay hidden">
+        <div class="modal-card modal-lg">
+            <div class="modal-header">
+                <h3 id="annModalTitle">Add Document Annotation</h3>
+                <button class="btn-close-modal" id="btnCloseAnnModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Highlight Quote Box -->
+                <div class="highlight-quote-box">
+                    <div class="quote-label">Selected Document Text:</div>
+                    <blockquote id="modalSelectedText">""</blockquote>
+                    <div class="quote-offsets">
+                        Target Property: <span id="modalTargetProp" class="tag-prop">urlPdf</span> | 
+                        Section: <span id="modalSectionTitle" class="tag-section">Body</span> | 
+                        Offsets: <span id="modalOffsets">Char 0 - 0</span>
+                    </div>
+                </div>
+
+                <form id="annotationForm" onsubmit="return false;">
+                    <div class="form-group">
+                        <label for="annCategory">Annotation Category:</label>
+                        <select id="annCategory" class="styled-select">
+                            <!-- Populated from settings -->
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="annComment">Comment / Explanation:</label>
+                        <textarea id="annComment" class="styled-textarea" rows="3" placeholder="Enter notes or observations about this snippet..."></textarea>
+                    </div>
+
+                    <!-- Key Value Table Section -->
+                    <div class="kv-section">
+                        <div class="kv-section-header">
+                            <label>📊 Key-Value Attribute Table (Optional)</label>
+                            <span class="subtext">Add structured properties extracted from this text segment</span>
+                        </div>
+
+                        <!-- Presets Chips -->
+                        <div class="kv-presets-bar">
+                            <span class="preset-label">Quick Add Key:</span>
+                            <div id="kvPresetsChips" class="preset-chips-container">
+                                <!-- Preset buttons rendered dynamically -->
+                            </div>
+                        </div>
+
+                        <!-- Dynamic Table -->
+                        <div class="table-responsive">
+                            <table class="kv-table" id="kvBuilderTable">
+                                <thead>
+                                    <tr>
+                                        <th style="width: 40%;">Property / Key</th>
+                                        <th style="width: 50%;">Value</th>
+                                        <th style="width: 10%;">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="kvTableBody">
+                                    <!-- Dynamic KV Rows -->
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <button type="button" id="btnAddKvRow" class="btn btn-secondary btn-sm">
+                            ➕ Add Key-Value Row
+                        </button>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="btnCancelAnn" class="btn btn-ghost">Cancel</button>
+                <button type="button" id="btnSaveAnn" class="btn btn-primary">💾 Save Annotation</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Document List Browser Modal -->
+    <div id="docListModal" class="modal-overlay hidden">
+        <div class="modal-card modal-xl">
+            <div class="modal-header">
+                <h3>📄 Full Document List</h3>
+                <button class="btn-close-modal" id="btnCloseDocListModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <!-- Search & Filters Toolbar -->
+                <div class="doc-list-toolbar">
+                    <div class="search-input-wrapper">
+                        <span class="icon">🔍</span>
+                        <input type="text" id="docListSearch" placeholder="Search by title, ID, institution, date..." />
+                    </div>
+                    <div class="filter-tabs">
+                        <button class="filter-tab active" data-filter="all">All Documents (<span id="countAllDocs">0</span>)</button>
+                        <button class="filter-tab" data-filter="annotated">Annotated (<span id="countAnnotatedDocs">0</span>)</button>
+                        <button class="filter-tab" data-filter="unannotated">Unannotated (<span id="countUnannotatedDocs">0</span>)</button>
+                    </div>
+                </div>
+
+                <!-- Document Grid / Table -->
+                <div class="doc-grid-container">
+                    <div class="doc-grid" id="docListGrid">
+                        <!-- Rendered Document Cards -->
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <span class="subtext" id="docListStatusSummary">Showing 100 documents</span>
+                <button type="button" class="btn btn-secondary" id="btnCloseDocListModalFooter">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal-overlay hidden">
+        <div class="modal-card modal-md">
+            <div class="modal-header">
+                <h3>⚙️ Annotation Settings</h3>
+                <button class="btn-close-modal" id="btnCloseSettingsModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="settingsForm" onsubmit="return false;">
+                    <div class="form-group">
+                        <label for="settingTargetProp">Default Document Property to Annotate:</label>
+                        <select id="settingTargetProp" class="styled-select">
+                            <option value="urlPdf">📄 Official PDF Text (urlPdf)</option>
+                            <option value="urlHtml">🌐 Official HTML Text (urlHtml)</option>
+                            <option value="descripcio">📝 Description (descripcio)</option>
+                            <option value="auto">✨ Combined Fields</option>
+                        </select>
+                        <span class="form-hint">Controls which text property opens by default for annotation.</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="settingCsvPath">CSV Storage Path:</label>
+                        <input type="text" id="settingCsvPath" class="styled-input" placeholder="annotations.csv" />
+                        <span class="form-hint">Location on disk where processed annotations are saved and reloaded.</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Key-Value Table Preset Keys:</label>
+                        <div class="tag-input-container" id="presetKeysTagContainer">
+                            <!-- Tag chips -->
+                        </div>
+                        <div class="add-preset-row">
+                            <input type="text" id="inputNewPresetKey" class="styled-input" placeholder="Add custom key preset..." />
+                            <button type="button" id="btnAddPresetKey" class="btn btn-secondary btn-sm">Add</button>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Categories & Color Palette:</label>
+                        <div class="categories-editor-list" id="categoriesEditorList">
+                            <!-- Category items -->
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" id="btnCancelSettings">Cancel</button>
+                <button type="button" class="btn btn-primary" id="btnSaveSettings">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Source Path Prompt Modal -->
+    <div id="customSourceModal" class="modal-overlay hidden">
+        <div class="modal-card modal-sm">
+            <div class="modal-header">
+                <h3>📁 Open Custom Source</h3>
+                <button class="btn-close-modal" id="btnCloseCustomSourceModal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="inputCustomSourcePath">JSON File or Directory Path:</label>
+                    <input type="text" id="inputCustomSourcePath" class="styled-input" placeholder="e.g. Catalonia/data/cido_subset_100.json" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-ghost" id="btnCancelCustomSource">Cancel</button>
+                <button type="button" class="btn btn-primary" id="btnLoadCustomSource">Load Source</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script src="/static/app.js"></script>
+</body>
+</html>

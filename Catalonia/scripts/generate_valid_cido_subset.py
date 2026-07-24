@@ -2,8 +2,8 @@ import os
 import sys
 import json
 import random
-import argparse
 import io
+import time
 import requests
 import pypdf
 from collections import Counter, defaultdict
@@ -120,6 +120,7 @@ def filter_valid_units(units, max_workers=30, max_needed_per_bucket=60):
         print(f"Testing pool {bucket_key}: candidate pool size = {len(pool)}...")
         random.shuffle(pool)
         
+        # Test in chunks until we reach max_needed_per_bucket
         bucket_valid = []
         chunk_size = 200
         for i in range(0, min(len(pool), 2000), chunk_size):
@@ -263,46 +264,25 @@ def enrich_subset_with_reference_ids(subset, cat_root):
     return subset
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate a balanced 100-document subset from CIDO mappings with reachable PDFs and <= 2 pages constraint")
-    parser.add_argument("--input", type=str, default="data/cido_to_dogc_map.json", help="Path to cido_to_dogc_map.json")
-    parser.add_argument("--output", type=str, default="data/cido_subset_100.json", help="Path to save the output subset JSON")
-    parser.add_argument("--total", type=int, default=100, help="Total number of documents in subset (default: 100)")
-    parser.add_argument("--normative-ratio", type=float, default=0.30, help="Target ratio of normative documents (default: 0.30)")
-    parser.add_argument("--dogc-ratio", type=float, default=0.30, help="Target ratio of DOGC documents (default: 0.30)")
-    parser.add_argument("--min-year", type=int, default=2015, help="Minimum publication year (default: 2015)")
-    parser.add_argument("--max-year", type=int, default=2026, help="Maximum publication year (default: 2026)")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducible sampling (default: 42)")
-    args = parser.parse_args()
-
-    input_path = os.path.join(cat_root, args.input)
-    output_path = os.path.join(cat_root, args.output)
-
-    if not os.path.exists(input_path):
-        print(f"Error: Input JSON file {input_path} not found.")
-        sys.exit(1)
+    input_path = os.path.join(cat_root, "data/cido_to_dogc_map.json")
+    output_path = os.path.join(cat_root, "data/cido_subset_100.json")
 
     print(f"Loading CIDO mappings from {input_path}...")
     with open(input_path, "r", encoding="utf-8") as f:
         cido_mappings = json.load(f)
 
-    print(f"Extracting document candidates ({args.min_year}-{args.max_year})...")
-    units = extract_document_units(cido_mappings, args.min_year, args.max_year)
-    print(f"Retrieved {len(units)} document candidates.")
+    print("Extracting document candidates (2015-2026)...")
+    units = extract_document_units(cido_mappings, 2015, 2026)
+    print(f"Extracted {len(units)} raw document candidates.")
 
-    print(f"Filtering candidate documents for PDF reachability and <= 2 pages constraint...")
+    print("Filtering candidates for HTTP reachability and page count <= 2...")
     valid_units = filter_valid_units(units, max_workers=30, max_needed_per_bucket=60)
-    print(f"Valid candidate pool: {len(valid_units)}")
+    print(f"Total valid candidate pool: {len(valid_units)}")
 
-    print(f"Sampling balanced subset of {args.total} documents...")
-    subset = sample_balanced_subset(
-        valid_units,
-        total=args.total,
-        norm_ratio=args.normative_ratio,
-        dogc_ratio=args.dogc_ratio,
-        seed=args.seed
-    )
+    print("Sampling balanced subset of 100 documents...")
+    subset = sample_balanced_subset(valid_units, total=100, norm_ratio=0.30, dogc_ratio=0.30, seed=42)
 
-    print(f"Enriching subset with reference IDs (cidoNodeId, documentNodeId, documentIds, sectionIds)...")
+    print("Enriching subset with graph reference IDs...")
     subset = enrich_subset_with_reference_ids(subset, cat_root)
 
     print(f"Saving subset JSON to {output_path}...")
@@ -314,12 +294,14 @@ def main():
         with open(hier_subset_path, "w", encoding="utf-8") as out:
             json.dump(subset, out, indent=2, ensure_ascii=False)
 
-    print("\n--- Subset Composition Summary ---")
-    print(f"Total documents: {len(subset)}")
-    print(f"Enriched records: {len(subset)} entries containing cidoNodeId, documentNodeId, documentIds, sectionIds.")
-    print(f"Page distribution: {Counter(s['numPages'] for s in subset)}")
-    print(f"Reachable PDFs: {sum(1 for s in subset if s.get('pdfReachable'))}/{len(subset)}")
-    print(f"Subset successfully saved to: {output_path}")
+    print("\n--- Subset Recreation Summary ---")
+    print(f"Total subset records: {len(subset)}")
+    print(f"Page counts distribution: {Counter(s['numPages'] for s in subset)}")
+    print(f"Reachable PDFs count: {sum(1 for s in subset if s.get('pdfReachable'))}/100")
+    print(f"Normative count: {sum(1 for s in subset if s['type'] == 'normatives-locals')}/100")
+    print(f"DOGC count: {sum(1 for s in subset if s['appearsInDogc'])}/100")
+    print(f"Year range: {min(s['year'] for s in subset)} - {max(s['year'] for s in subset)}")
+    print("Done!")
 
 if __name__ == "__main__":
     main()

@@ -1,0 +1,18 @@
+I --> Graph Design
+
+Nodes: 
+  - DoGC {date, DoGCnumber, urllink}  --> Connected to documents inside
+	eliID: eli/es-cat/dogc/2026/06/06/9546
+  - cidoDocument (Double Label with specific type {contractacions, oposicions, normatives-locals, subvencions, convenis...}) {date, urllink} --> Connected to documents inside 
+	eliID: eli/es-cat/cido-cont/2026/06/06/12
+  - document (double Label with specific type {resolucio, edicte, anunci, llei...}) {date, urllink} --> connected to articles/sections inside
+	eliID: eli/es-cat/doc/2026/06/06/12
+  - section (double label with articles) (number, text)--> connected to other documents cited inside
+	eliID: eli/es-cat/doc-sec1/2026/06/06/12
+  - descriptor/materia {id, name} --> connected to cidoDocuments/documents
+
+Edges:
+ - Contains (from DoGC/cidoDocument to document) {macrosection of dogc (Disposicions general, altres dispocions...), type of relation (Aprovació inicial, Aprovacio definitiva...)}}
+ - Has_Section (from document to section)
+ - Cites/Modify/Abrogates… (from section to section/document/cidoDocument) {flags: in metadata/regex}
+ - Has_topic (from cidoDocument/document to descriptor/materia)

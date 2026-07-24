@@ -83,7 +83,8 @@ def main():
     parser.add_argument("--workers", type=int, default=25, help="Number of concurrent thread workers (default: 25)")
     args = parser.parse_args()
 
-    dogc_json_path = os.path.join(script_dir, "dogc_documents.json")
+    data_dir = os.path.join(parent_dir, "data")
+    dogc_json_path = os.path.join(data_dir, "dogc_documents.json")
     print(f"Loading base documents from {dogc_json_path}...")
     with open(dogc_json_path, "r", encoding="utf-8") as f:
         docs = json.load(f)
